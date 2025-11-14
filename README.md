@@ -1,6 +1,6 @@
 # Maximize to Workspace
 
-A GNOME Shell extension that automatically moves maximized windows to empty workspaces and restores them when unmaximized or closed.
+A GNOME Shell extension that binds maximized windows to their own workspace.
 
 ## Features
 
@@ -58,6 +58,7 @@ Open the extension preferences to configure:
 
 - **Move on Maximize**: When enabled, windows are moved to empty workspaces when maximized (not just fullscreen)
 - **Restore on Close**: When enabled, closing a maximized window returns you to the previous workspace
+- **Create Workspace at End**: When enabled (default), new workspaces are created as the last workspace in the list. When disabled, workspaces are created next to the current workspace
 
 #### Application Filtering
 

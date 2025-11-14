@@ -35,7 +35,7 @@ const MaximizeToWorkspaceToggle = GObject.registerClass(
 export default class MaximizeToWorkspaceExtension extends Extension {
   constructor(metadata) {
     super(metadata);
-    this._movedWindows = new WeakSet();
+    this._movedWindows = new WeakMap();
     this._pendingMove = new Map();
     this._signals = [];
     this._mutterSettings = null;
@@ -257,18 +257,44 @@ export default class MaximizeToWorkspaceExtension extends Extension {
       return;
     }
 
-    this._movedWindows.add(window);
-
     const workspaceManager = this._getWS();
     const currentIndex = workspaceManager.get_active_workspace_index();
 
-    if (currentIndex < emptyWorkspaceIndex) {
+    this._movedWindows.set(window, currentIndex);
+
+    const createAtEnd = this._settings.get_boolean('create-workspace-at-end');
+
+    if (createAtEnd) {
+      // The swap relies on two explicit reorder operations. GNOME Shell exposes
+      // workspace movement as a positional update rather than a true "insert"
+      // semantic, so a direct move would shift the visible stack and trigger an
+      // animated workspace transition. The sequence below avoids that.
+      //
+      // First step moves the empty workspace into the current position. This
+      // places it logically where we want to land, but it also shifts the
+      // workspace that used to occupy that slot to the next index.
+      //
+      // Second step moves that displaced workspace back to the original
+      // location of the empty workspace.
+      //
+      // After the layout is stable, window reassignment proceeds using the
+      // final indices.
+      //
       const emptyWorkspace = workspaceManager.get_workspace_by_index(emptyWorkspaceIndex);
       workspaceManager.reorder_workspace(emptyWorkspace, currentIndex);
-
+      workspaceManager.reorder_workspace(workspaceManager.get_workspace_by_index(currentIndex + 1), emptyWorkspaceIndex);
       otherWindows.forEach(w => {
         w.change_workspace_by_index(currentIndex, false);
       });
+    } else {
+      if (currentIndex < emptyWorkspaceIndex) {
+        const emptyWorkspace = workspaceManager.get_workspace_by_index(emptyWorkspaceIndex);
+        workspaceManager.reorder_workspace(emptyWorkspace, currentIndex);
+
+        otherWindows.forEach(w => {
+          w.change_workspace_by_index(currentIndex, false);
+        });
+      }
     }
   }
 
@@ -294,19 +320,26 @@ export default class MaximizeToWorkspaceExtension extends Extension {
       return;
     }
 
-    const lastOccupiedIndex = this._getLastOccupiedWorkspace(monitor, currentIndex);
-    if (lastOccupiedIndex === -1) {
+    const originalIndex = this._movedWindows.get(window);
+    if (originalIndex === undefined) {
       this._movedWindows.delete(window);
       return;
     }
 
     const workspaceManager = this._getWS();
-    const wListlastoccupied = workspaceManager.get_workspace_by_index(lastOccupiedIndex)
-      .list_windows().filter(w => w !== window && !w.is_always_on_all_workspaces() && w.get_monitor() === monitor);
 
-    workspaceManager.reorder_workspace(workspaceManager.get_workspace_by_index(currentIndex), lastOccupiedIndex);
-    wListlastoccupied.forEach(w => {
-      w.change_workspace_by_index(lastOccupiedIndex, false);
+    const originalWorkspace = workspaceManager.get_workspace_by_index(originalIndex);
+    if (!originalWorkspace) {
+      this._movedWindows.delete(window);
+      return;
+    }
+
+    const wListOriginal = originalWorkspace.list_windows()
+      .filter(w => w !== window && !w.is_always_on_all_workspaces() && w.get_monitor() === monitor);
+
+    workspaceManager.reorder_workspace(workspaceManager.get_workspace_by_index(currentIndex), originalIndex);
+    wListOriginal.forEach(w => {
+      w.change_workspace_by_index(originalIndex, false);
     });
 
     this._movedWindows.delete(window);
@@ -326,7 +359,12 @@ export default class MaximizeToWorkspaceExtension extends Extension {
       return;
 
     this._pendingMove.delete(window);
-    this._movedWindows.delete(window);
+
+    if (this._settings.get_boolean('restore-on-close')) {
+      this._restoreToPreviousWorkspace(window);
+    } else {
+      this._movedWindows.delete(window);
+    }
   }
 
   _onWindowSizeChange(_wm, actor, change, _oldRect) {

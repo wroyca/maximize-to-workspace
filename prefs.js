@@ -45,6 +45,18 @@ export default class MaximizeToWorkspacePreferences extends ExtensionPreferences
         );
         generalGroup.add(restoreOnCloseRow);
 
+        const createAtEndRow = new Adw.SwitchRow({
+            title: 'Create Workspace at End',
+            subtitle: 'Create the new workspace as the last workspace in the list',
+        });
+        settings.bind(
+            'create-workspace-at-end',
+            createAtEndRow,
+            'active',
+            Gio.SettingsBindFlags.DEFAULT
+        );
+        generalGroup.add(createAtEndRow);
+
         const filterPage = new Adw.PreferencesPage({
             title: 'Applications',
             icon_name: 'applications-system-symbolic',

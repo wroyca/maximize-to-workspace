@@ -38,5 +38,11 @@
       <description>Return to previous workspace when closing a maximized window</description>
     </key>
 
+    <key name="create-workspace-at-end" type="b">
+      <default>true</default>
+      <summary>Create workspace at end</summary>
+      <description>Create the new workspace as the last workspace in the list</description>
+    </key>
+
   </schema>
 </schemalist>
