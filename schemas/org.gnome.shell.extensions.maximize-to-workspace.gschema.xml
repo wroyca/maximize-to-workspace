@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.maximize-to-workspace" path="/org/gnome/shell/extensions/maximize-to-workspace/">
+
+    <key name="enabled" type="b">
+      <default>true</default>
+      <summary>Enable extension</summary>
+      <description>Enable or disable the maximize to workspace functionality</description>
+    </key>
+
+    <key name="filter-mode" type="s">
+      <default>"none"</default>
+      <summary>Application filter mode</summary>
+      <description>Filter mode for applications: "none" (all apps), "blacklist" (exclude listed apps), or "whitelist" (only listed apps)</description>
+    </key>
+
+    <key name="blacklist" type="as">
+      <default>[]</default>
+      <summary>Application blacklist</summary>
+      <description>List of application WM_CLASS names to exclude from maximize behavior</description>
+    </key>
+
+    <key name="whitelist" type="as">
+      <default>[]</default>
+      <summary>Application whitelist</summary>
+      <description>List of application WM_CLASS names to include in maximize behavior</description>
+    </key>
+
+    <key name="move-on-maximize" type="b">
+      <default>true</default>
+      <summary>Move window on maximize</summary>
+      <description>Move window to empty workspace when maximized (not just fullscreen)</description>
+    </key>
+
+    <key name="restore-on-close" type="b">
+      <default>true</default>
+      <summary>Restore workspace on close</summary>
+      <description>Return to previous workspace when closing a maximized window</description>
+    </key>
+
+  </schema>
+</schemalist>

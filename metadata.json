@@ -1,0 +1,13 @@
+{
+  "name": "Maximize to Workspace",
+  "description": "Automatically moves maximized windows to empty workspaces and restores them when unmaximized",
+  "uuid": "maximize-to-workspace@wroyca",
+  "shell-version": [
+    "47",
+    "48",
+    "49"
+  ],
+  "version": 1,
+  "url": "https://github.com/wroyca/maximize-to-workspace",
+  "settings-schema": "org.gnome.shell.extensions.maximize-to-workspace"
+}
