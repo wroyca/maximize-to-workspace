@@ -35,14 +35,24 @@ const MaximizeToWorkspaceToggle = GObject.registerClass(
 export default class MaximizeToWorkspaceExtension extends Extension {
   constructor(metadata) {
     super(metadata);
+
     this._movedWindows = new WeakMap();
-    this._pendingMove = new Map();
+    this._pendingMove = new Set();
+    this._pendingMoveSourceId = 0;
     this._signals = [];
     this._mutterSettings = null;
     this._quickSettingsItem = null;
     this._blacklist = new Set();
     this._whitelist = new Set();
     this._filterMode = 'none';
+    this._enabled = false;
+    this._moveOnMaximize = false;
+    this._restoreOnClose = false;
+    this._createWorkspaceAtEnd = true;
+    this._workspacesOnlyOnPrimary = false;
+    this._settings = null;
+    this._settingsCacheId = null;
+    this._mutterSettingsId = null;
   }
 
   enable() {
@@ -51,7 +61,40 @@ export default class MaximizeToWorkspaceExtension extends Extension {
       schema_id: 'org.gnome.mutter'
     });
 
+    this._enabled = this._settings.get_boolean('enabled');
+    this._moveOnMaximize = this._settings.get_boolean('move-on-maximize');
+    this._restoreOnClose = this._settings.get_boolean('restore-on-close');
+    this._createWorkspaceAtEnd = this._settings.get_boolean('create-workspace-at-end');
+    this._workspacesOnlyOnPrimary = this._mutterSettings.get_boolean('workspaces-only-on-primary');
+
     this._registerSimpleSettingsCache();
+
+    this._settingsCacheId.push(
+      this._settings.connect('changed::enabled', () => {
+        this._enabled = this._settings.get_boolean('enabled');
+        if (!this._enabled) {
+          this._pendingMove.clear();
+          this._movedWindows = new WeakMap();
+        }
+      }),
+      this._settings.connect('changed::move-on-maximize', () => {
+        this._moveOnMaximize = this._settings.get_boolean('move-on-maximize');
+      }),
+      this._settings.connect('changed::restore-on-close', () => {
+        this._restoreOnClose = this._settings.get_boolean('restore-on-close');
+      }),
+      this._settings.connect('changed::create-workspace-at-end', () => {
+        this._createWorkspaceAtEnd = this._settings.get_boolean('create-workspace-at-end');
+      })
+    );
+
+    this._mutterSettingsId = this._mutterSettings.connect(
+      'changed::workspaces-only-on-primary',
+      () => {
+        this._workspacesOnlyOnPrimary =
+          this._mutterSettings.get_boolean('workspaces-only-on-primary');
+      }
+    );
 
     this._connectSignal(global.window_manager, 'map', this._onWindowMap.bind(this));
     this._connectSignal(global.window_manager, 'destroy', this._onWindowDestroy.bind(this));
@@ -81,13 +124,25 @@ export default class MaximizeToWorkspaceExtension extends Extension {
     });
     this._signals = [];
 
+    if (this._pendingMoveSourceId) {
+      GLib.source_remove(this._pendingMoveSourceId);
+      this._pendingMoveSourceId = 0;
+    }
+
+    this._pendingMove.clear();
+    this._movedWindows = new WeakMap();
+
     if (this._settingsCacheId && this._settings) {
       for (const id of this._settingsCacheId)
         this._settings.disconnect(id);
       this._settingsCacheId = null;
     }
 
-    this._pendingMove.clear();
+    if (this._mutterSettingsId && this._mutterSettings) {
+      this._mutterSettings.disconnect(this._mutterSettingsId);
+      this._mutterSettingsId = null;
+    }
+
     this._blacklist.clear();
     this._whitelist.clear();
     this._settings = null;
@@ -110,9 +165,15 @@ export default class MaximizeToWorkspaceExtension extends Extension {
   }
 
   _listWindowsFiltered(workspace, monitor) {
-    return workspace.list_windows().filter(w =>
-      !w.is_always_on_all_workspaces() && w.get_monitor() === monitor
-    );
+    const all = workspace.list_windows();
+    const out = [];
+
+    for (const w of all) {
+      if (!w.is_always_on_all_workspaces() && w.get_monitor() === monitor)
+        out.push(w);
+    }
+
+    return out;
   }
 
   _registerSimpleSettingsCache() {
@@ -124,15 +185,16 @@ export default class MaximizeToWorkspaceExtension extends Extension {
 
     rebuild();
 
-    this._settingsCacheId = [
+    this._settingsCacheId = this._settingsCacheId || [];
+    this._settingsCacheId.push(
       this._settings.connect('changed::blacklist', rebuild),
       this._settings.connect('changed::whitelist', rebuild),
       this._settings.connect('changed::filter-mode', rebuild),
-    ];
+    );
   }
 
   _isEnabled() {
-    return this._settings.get_boolean('enabled');
+    return this._enabled;
   }
 
   _isNormalWindow(window) {
@@ -158,7 +220,7 @@ export default class MaximizeToWorkspaceExtension extends Extension {
   }
 
   _shouldMoveOnMaximize(window) {
-    return this._settings.get_boolean('move-on-maximize') &&
+    return this._moveOnMaximize &&
       window.is_maximized(Meta.MaximizeFlags.BOTH);
   }
 
@@ -175,22 +237,38 @@ export default class MaximizeToWorkspaceExtension extends Extension {
   }
 
   _scheduleMove(window) {
+    if (!this._enabled || !this._isWindowAllowed(window))
+      return;
+
     if (this._pendingMove.has(window))
       return;
 
-    this._pendingMove.set(window, true);
+    this._pendingMove.add(window);
 
-    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-      this._pendingMove.delete(window);
+    if (this._pendingMoveSourceId !== 0)
+      return;
 
-      if (!this._settings)
+    this._pendingMoveSourceId = GLib.idle_add(
+      GLib.PRIORITY_DEFAULT_IDLE,
+      () => {
+        this._pendingMoveSourceId = 0;
+
+        if (!this._settings || !this._enabled) {
+          this._pendingMove.clear();
+          return GLib.SOURCE_REMOVE;
+        }
+
+        const windows = Array.from(this._pendingMove);
+        this._pendingMove.clear();
+
+        for (const w of windows) {
+          if (this._shouldMoveWindow(w))
+            this._moveToEmptyWorkspace(w);
+        }
+
         return GLib.SOURCE_REMOVE;
-
-      if (this._shouldMoveWindow(window))
-        this._moveToEmptyWorkspace(window);
-
-      return GLib.SOURCE_REMOVE;
-    });
+      }
+    );
   }
 
   // Workspace management
@@ -200,15 +278,21 @@ export default class MaximizeToWorkspaceExtension extends Extension {
     const count = ws.get_n_workspaces();
 
     let s = Math.max(0, Math.min(start, count - 1));
-    const range = reverse
-      ? Array.from({ length: s + 1 }, (_, i) => s - i)
-      : Array.from({ length: count - s }, (_, i) => s + i);
 
-    for (const i of range) {
-      const w = ws.get_workspace_by_index(i);
-      const items = this._listWindowsFiltered(w, monitor);
-      if (predicate(items))
-        return i;
+    if (reverse) {
+      for (let i = s; i >= 0; --i) {
+        const w = ws.get_workspace_by_index(i);
+        const items = this._listWindowsFiltered(w, monitor);
+        if (predicate(items))
+          return i;
+      }
+    } else {
+      for (let i = s; i < count; ++i) {
+        const w = ws.get_workspace_by_index(i);
+        const items = this._listWindowsFiltered(w, monitor);
+        if (predicate(items))
+          return i;
+      }
     }
 
     return -1;
@@ -240,17 +324,17 @@ export default class MaximizeToWorkspaceExtension extends Extension {
   _moveToEmptyWorkspace(window) {
     const monitor = this._getMonitor(window);
 
-    const workspacesOnlyOnPrimary = this._mutterSettings.get_boolean('workspaces-only-on-primary');
-    if (workspacesOnlyOnPrimary && monitor !== global.display.get_primary_monitor()) {
+    if (this._workspacesOnlyOnPrimary &&
+        monitor !== global.display.get_primary_monitor()) {
       return;
     }
 
     const currentWorkspace = window.get_workspace();
-    const otherWindows = this._listWindowsFiltered(currentWorkspace, monitor).filter(w => w !== window);
+    const otherWindows = this._listWindowsFiltered(currentWorkspace, monitor)
+      .filter(w => w !== window);
 
-    if (otherWindows.length === 0) {
+    if (otherWindows.length === 0)
       return;
-    }
 
     const emptyWorkspaceIndex = this._getFirstEmptyWorkspace(monitor);
     if (emptyWorkspaceIndex === -1) {
@@ -262,9 +346,7 @@ export default class MaximizeToWorkspaceExtension extends Extension {
 
     this._movedWindows.set(window, currentIndex);
 
-    const createAtEnd = this._settings.get_boolean('create-workspace-at-end');
-
-    if (createAtEnd) {
+    if (this._createWorkspaceAtEnd) {
       // The swap relies on two explicit reorder operations. GNOME Shell exposes
       // workspace movement as a positional update rather than a true "insert"
       // semantic, so a direct move would shift the visible stack and trigger an
@@ -282,18 +364,20 @@ export default class MaximizeToWorkspaceExtension extends Extension {
       //
       const emptyWorkspace = workspaceManager.get_workspace_by_index(emptyWorkspaceIndex);
       workspaceManager.reorder_workspace(emptyWorkspace, currentIndex);
-      workspaceManager.reorder_workspace(workspaceManager.get_workspace_by_index(currentIndex + 1), emptyWorkspaceIndex);
-      otherWindows.forEach(w => {
+      workspaceManager.reorder_workspace(
+        workspaceManager.get_workspace_by_index(currentIndex + 1),
+        emptyWorkspaceIndex
+      );
+
+      for (const w of otherWindows)
         w.change_workspace_by_index(currentIndex, false);
-      });
     } else {
       if (currentIndex < emptyWorkspaceIndex) {
         const emptyWorkspace = workspaceManager.get_workspace_by_index(emptyWorkspaceIndex);
         workspaceManager.reorder_workspace(emptyWorkspace, currentIndex);
 
-        otherWindows.forEach(w => {
+        for (const w of otherWindows)
           w.change_workspace_by_index(currentIndex, false);
-        });
       }
     }
   }
@@ -307,13 +391,13 @@ export default class MaximizeToWorkspaceExtension extends Extension {
     const currentWorkspace = window.get_workspace();
     const currentIndex = currentWorkspace.index();
 
-    const workspacesOnlyOnPrimary = this._mutterSettings.get_boolean('workspaces-only-on-primary');
-    if (workspacesOnlyOnPrimary && monitor !== global.display.get_primary_monitor()) {
+    if (this._workspacesOnlyOnPrimary && monitor !== global.display.get_primary_monitor()) {
       this._movedWindows.delete(window);
       return;
     }
 
-    const otherWindows = this._listWindowsFiltered(currentWorkspace, monitor).filter(w => w !== window);
+    const otherWindows = this._listWindowsFiltered(currentWorkspace, monitor)
+      .filter(w => w !== window);
 
     if (otherWindows.length > 0) {
       this._movedWindows.delete(window);
@@ -338,9 +422,8 @@ export default class MaximizeToWorkspaceExtension extends Extension {
       .filter(w => w !== window && !w.is_always_on_all_workspaces() && w.get_monitor() === monitor);
 
     workspaceManager.reorder_workspace(workspaceManager.get_workspace_by_index(currentIndex), originalIndex);
-    wListOriginal.forEach(w => {
+    for (const w of wListOriginal)
       w.change_workspace_by_index(originalIndex, false);
-    });
 
     this._movedWindows.delete(window);
   }
@@ -360,7 +443,7 @@ export default class MaximizeToWorkspaceExtension extends Extension {
 
     this._pendingMove.delete(window);
 
-    if (this._settings.get_boolean('restore-on-close')) {
+    if (this._restoreOnClose) {
       this._restoreToPreviousWorkspace(window);
     } else {
       this._movedWindows.delete(window);
@@ -382,7 +465,7 @@ export default class MaximizeToWorkspaceExtension extends Extension {
     }
 
     if (change === Meta.SizeChange.UNFULLSCREEN) {
-      if (!this._settings.get_boolean('move-on-maximize') ||
+      if (!this._moveOnMaximize ||
           !window.is_maximized(Meta.MaximizeFlags.BOTH)) {
         this._restoreToPreviousWorkspace(window);
       }
